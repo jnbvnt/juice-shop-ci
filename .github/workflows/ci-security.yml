@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-      - run: npm ci --ignore-scripts
+      - run: npm install --ignore-scripts
       - name: Build frontend
         run: npm run build 2>/dev/null || true
       - uses: actions/upload-artifact@v4
@@ -41,7 +41,7 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-      - run: npm ci --ignore-scripts
+      - run: npm install --ignore-scripts
       - run: npm test 2>&1 | tee test-results.txt || true
       - uses: actions/upload-artifact@v4
         with:
@@ -97,7 +97,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm ci --ignore-scripts
+      - run: npm install --ignore-scripts
       - name: npm audit
         run: npm audit --json > npm-audit.json 2>&1 || true
       - name: OWASP Dependency Check
