@@ -281,31 +281,52 @@ jobs:
             zap-report.html
 
   # ─── PHASE 9 : RAPPORT GLOBAL ──────────────────────────────────
-  security-summary:
-    name: Security Reports Summary
-    runs-on: ubuntu-latest
-    needs: [secret-scan, sast, sca, dast]
-    if: always()
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: '*-report*'
-          merge-multiple: true
-      - name: Generate summary
-        run: |
-          echo "## 🛡️ Security Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Secret Scan (Gitleaks) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
-          echo "| SAST (Semgrep) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
-          echo "| SCA (OWASP DC) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
-          echo "| Container Scan (Trivy) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
-          echo "| DAST (ZAP) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: all-security-reports
-          path: .
-          retention-days: 30
+ security-summary:
+   name: Security Reports Summary
+   runs-on: ubuntu-latest
+   needs: [secret-scan, sast, sca, docker-build, dast]
+   if: always()
+   steps:
+     - name: Generate summary
+       env:
+         GITLEAKS_STATUS: ${{ needs.secret-scan.result }}
+         SEMGREP_STATUS:  ${{ needs.sast.result }}
+         SCA_STATUS:      ${{ needs.sca.result }}
+         TRIVY_STATUS:    ${{ needs.docker-build.result }}
+         ZAP_STATUS:      ${{ needs.dast.result }}
+       run: |
+         status_icon() {
+           case "$1" in
+             success)  echo "✅ Pass" ;;
+             failure)  echo "❌ Fail" ;;
+             skipped)  echo "⏭️ Skipped" ;;
+             *)        echo "⚠️ $1" ;;
+           esac
+         }
+ 
+         echo "## 🛡️ Security Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+         echo "" >> $GITHUB_STEP_SUMMARY
+         echo "| Check | Tool | Status |" >> $GITHUB_STEP_SUMMARY
+         echo "|-------|------|--------|" >> $GITHUB_STEP_SUMMARY
+         echo "| Secret Detection | Gitleaks | $(status_icon $GITLEAKS_STATUS) |" >> $GITHUB_STEP_SUMMARY
+         echo "| Static Analysis (SAST) | Semgrep | $(status_icon $SEMGREP_STATUS) |" >> $GITHUB_STEP_SUMMARY
+         echo "| Dependency Analysis (SCA) | npm audit + OWASP DC | $(status_icon $SCA_STATUS) |" >> $GITHUB_STEP_SUMMARY
+         echo "| Container Scan | Trivy | $(status_icon $TRIVY_STATUS) |" >> $GITHUB_STEP_SUMMARY
+         echo "| Dynamic Analysis (DAST) | OWASP ZAP | $(status_icon $ZAP_STATUS) |" >> $GITHUB_STEP_SUMMARY
+         echo "" >> $GITHUB_STEP_SUMMARY
+ 
+         # Overall status
+         if [[ "$GITLEAKS_STATUS" == "failure" || "$SEMGREP_STATUS" == "failure" || \
+               "$SCA_STATUS" == "failure" || "$TRIVY_STATUS" == "failure" || \
+               "$ZAP_STATUS" == "failure" ]]; then
+           echo "### ❌ Overall: PIPELINE FAILED — security issues detected" >> $GITHUB_STEP_SUMMARY
+         else
+           echo "### ✅ Overall: PIPELINE PASSED" >> $GITHUB_STEP_SUMMARY
+         fi
+ 
+         echo "" >> $GITHUB_STEP_SUMMARY
+         echo "_Run #${{ github.run_number }} — ${{ github.repository }} — $(date -u '+%Y-%m-%d %H:%M UTC')_" >> $GITHUB_STEP_SUMMARY
+
   pdf-report:
     name: Generate PDF Security Report
     runs-on: ubuntu-latest
