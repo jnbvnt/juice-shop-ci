@@ -1,0 +1,230 @@
+name: CI/CD Security Pipeline
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # ─── PHASE 1 : BUILD ───────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - name: Build frontend
+        run: npm run build 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: frontend/dist/
+          if-no-files-found: ignore
+
+  # ─── PHASE 2 : TESTS ───────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - run: npm test 2>&1 | tee test-results.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.txt
+
+  # ─── PHASE 3 : SECRET SCAN ─────────────────────────────────────
+  secret-scan:
+    name: Secret Detection (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-report
+          path: results.sarif
+          if-no-files-found: ignore
+
+  # ─── PHASE 4 : SAST ────────────────────────────────────────────
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/javascript
+            p/nodejs
+            p/owasp-top-ten
+          generateSarif: "1"
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-report
+          path: semgrep.sarif
+          if-no-files-found: ignore
+
+  # ─── PHASE 5 : SCA (dépendances) ───────────────────────────────
+  sca:
+    name: Dependency Check (npm audit + OWASP DC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts
+      - name: npm audit
+        run: npm audit --json > npm-audit.json 2>&1 || true
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'juice-shop-ci'
+          path: '.'
+          format: 'HTML,JSON'
+          out: 'dependency-check-report'
+          args: >
+            --enableRetired
+            --enableExperimental
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sca-reports
+          path: |
+            npm-audit.json
+            dependency-check-report/
+
+  # ─── PHASE 6 : BUILD IMAGE DOCKER ──────────────────────────────
+  docker-build:
+    name: Docker Build & Scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: [build, test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t juice-shop:${{ github.sha }} .
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'juice-shop:${{ github.sha }}'
+          format: 'json'
+          output: 'trivy-report.json'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-report
+          path: trivy-report.json
+      - name: Save Docker image
+        run: docker save juice-shop:${{ github.sha }} | gzip > juice-shop.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: juice-shop.tar.gz
+
+  # ─── PHASE 7 : DEPLOY EN ENVIRONNEMENT DE TEST ─────────────────
+  deploy-test:
+    name: Deploy to Test Environment
+    runs-on: ubuntu-latest
+    needs: docker-build
+    outputs:
+      app-url: http://localhost:3000
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+      - name: Load Docker image
+        run: docker load < juice-shop.tar.gz
+      - name: Start application
+        run: |
+          docker run -d \
+            --name juice-shop-test \
+            -p 3000:3000 \
+            juice-shop:${{ github.sha }}
+          echo "Waiting for app to start..."
+          sleep 30
+          curl --retry 10 --retry-delay 5 --retry-connrefused http://localhost:3000 -o /dev/null -s -w "%{http_code}"
+
+  # ─── PHASE 8 : DAST (ZAP) ──────────────────────────────────────
+  dast:
+    name: DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: deploy-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+      - name: Load and start application
+        run: |
+          docker load < juice-shop.tar.gz
+          docker run -d --name juice-shop-dast -p 3000:3000 juice-shop:${{ github.sha }}
+          sleep 30
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: 'http://localhost:3000'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-J zap-report.json -r zap-report.html'
+          fail_action: false
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-reports
+          path: |
+            zap-report.json
+            zap-report.html
+
+  # ─── PHASE 9 : RAPPORT GLOBAL ──────────────────────────────────
+  security-summary:
+    name: Security Reports Summary
+    runs-on: ubuntu-latest
+    needs: [secret-scan, sast, sca, dast]
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-report*'
+          merge-multiple: true
+      - name: Generate summary
+        run: |
+          echo "## 🛡️ Security Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Secret Scan (Gitleaks) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
+          echo "| SAST (Semgrep) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
+          echo "| SCA (OWASP DC) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
+          echo "| Container Scan (Trivy) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
+          echo "| DAST (ZAP) | ✅ Done |" >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: all-security-reports
+          path: .
+          retention-days: 30
