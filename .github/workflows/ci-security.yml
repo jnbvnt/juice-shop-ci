@@ -226,7 +226,7 @@ jobs:
           name: all-security-reports
           path: .
           retention-days: 30
-# ─── PHASE 10 : RAPPORT PDF UNIFIÉ ────────────────────────────────────────────
+ # ─── PHASE 10 : RAPPORT PDF UNIFIÉ ────────────────────────────────────────────
  pdf-report:
    name: Generate PDF Security Report
    runs-on: ubuntu-latest
