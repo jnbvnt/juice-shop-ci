@@ -1,4 +1,4 @@
-FROM node:24 AS installer
+FROM node:26 AS installer
 COPY . /juice-shop
 WORKDIR /juice-shop
 RUN npm install -g typescript@~5.3.3
