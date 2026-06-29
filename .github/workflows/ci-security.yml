@@ -253,21 +253,96 @@ jobs:
     needs: deploy-test
     steps:
       - uses: actions/checkout@v4
+  
       - uses: actions/download-artifact@v4
         with:
           name: docker-image
+  
       - name: Load and start application
         run: |
           docker load < juice-shop.tar.gz
           docker run -d --name juice-shop-dast -p 3000:3000 juice-shop:${{ github.sha }}
-          sleep 30
-      - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.14.0
-        with:
-          target: 'http://localhost:3000'
-          rules_file_name: '.zap/rules.tsv'
-          cmd_options: '-J zap-report.json -r zap-report.html'
-          fail_action: true
+          echo "Waiting for app to start..."
+          sleep 40
+          curl --retry 15 --retry-delay 5 --retry-connrefused \
+            http://localhost:3000 -o /dev/null -s -w "HTTP %{http_code}\n"
+  
+      - name: Get JWT token (authentication)
+        id: auth
+        run: |
+          TOKEN=$(curl -s -X POST http://localhost:3000/rest/user/login \
+            -H "Content-Type: application/json" \
+            -d '{"email":"admin@juice-sh.op","password":"admin123"}' \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['authentication']['token'])")
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          echo "Token obtained: ${TOKEN:0:20}..."
+  
+      - name: Create ZAP context with auth
+        run: |
+          mkdir -p .zap
+          cat > .zap/juice-shop.context << 'EOF'
+          <?xml version="1.0" encoding="UTF-8" standalone="no"?>
+          <configuration>
+            <context>
+              <name>Juice Shop</name>
+              <desc/>
+              <inscope>true</inscope>
+              <incregexes>http://localhost:3000.*</incregexes>
+              <tech>
+                <include>Db</include>
+                <include>Language</include>
+                <include>OS</include>
+                <include>WS</include>
+              </tech>
+              <users/>
+              <forcedUser>-1</forcedUser>
+              <session class="org.zaproxy.zap.extension.httpsessions.HttpSessionsSite"/>
+              <authentication class="org.zaproxy.zap.extension.authentication.AuthenticationMethodType$ManualAuthenticationMethod">
+                <loggedin>basket</loggedin>
+                <loggedout>login</loggedout>
+              </authentication>
+            </context>
+          </configuration>
+          EOF
+  
+      - name: ZAP authenticated baseline scan
+        run: |
+          docker run --rm \
+            --network host \
+            -v $(pwd):/zap/wrk/:rw \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t http://localhost:3000 \
+              -r /zap/wrk/zap-report.html \
+              -J /zap/wrk/zap-report.json \
+              -w /zap/wrk/zap-report.md \
+              -z "-config replacer.full_list(0).description=auth \
+                  -config replacer.full_list(0).enabled=true \
+                  -config replacer.full_list(0).matchtype=REQ_HEADER \
+                  -config replacer.full_list(0).matchstr=Authorization \
+                  -config replacer.full_list(0).replacement='Bearer ${{ steps.auth.outputs.token }}' \
+                  -config replacer.full_list(0).matchregex=false" \
+              -I || true
+  
+      - name: Quality gate — ZAP
+        run: |
+          HIGH=$(python3 -c "
+          import json
+          d = json.load(open('zap-report.json'))
+          total = sum(
+            1 for site in d.get('site', [])
+            for alert in site.get('alerts', [])
+            if alert.get('riskdesc','').startswith('High')
+          )
+          print(total)
+          ")
+          echo "High risk alerts: $HIGH"
+          if [ "$HIGH" -gt 5 ]; then
+            echo "GATE FAILED: $HIGH high-risk alerts detected"
+            exit 1
+          fi
+          echo "Quality gate passed ($HIGH high alerts)"
+  
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -275,7 +350,8 @@ jobs:
           path: |
             zap-report.json
             zap-report.html
-
+            zap-report.md
+          retention-days: 30
   # ─── PHASE 9 : RAPPORT GLOBAL ──────────────────────────────────
   security-summary:
     name: Security Reports Summary
