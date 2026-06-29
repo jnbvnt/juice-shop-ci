@@ -11,7 +11,7 @@ permissions:
   security-events: write
 
 jobs:
-  # ─── PHASE 1 : BUILD ───────────────────────────────────────────
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -29,7 +29,6 @@ jobs:
           path: frontend/dist/
           if-no-files-found: ignore
 
-  # ─── PHASE 2 : TESTS ───────────────────────────────────────────
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -46,10 +45,10 @@ jobs:
           name: test-results
           path: test-results.txt
 
-  # ─── PHASE 3 : SECRET SCAN ─────────────────────────────────────
   secret-scan:
     name: Secret Detection (Gitleaks)
     runs-on: ubuntu-latest
+    if: always()                        # ← tourne toujours
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,12 +69,10 @@ jobs:
           path: results.sarif
           if-no-files-found: ignore
 
-
-
-  # ─── PHASE 4 : SAST ────────────────────────────────────────────
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
+    if: always()                        # ← tourne toujours
     steps:
       - uses: actions/checkout@v4
       - name: Install Semgrep
@@ -102,21 +99,18 @@ jobs:
           path: semgrep.sarif
           if-no-files-found: ignore
 
-
-  # ─── PHASE 5 : SCA (dépendances) ───────────────────────────────
   sca:
     name: Dependency Check (npm audit + OWASP DC)
     runs-on: ubuntu-latest
+    if: always()                        # ← tourne toujours
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm install --ignore-scripts
-  
       - name: npm audit
         run: npm audit --json > npm-audit.json 2>&1 || true
-  
       - name: OWASP Dependency Check
         uses: dependency-check/Dependency-Check_Action@main
         with:
@@ -126,7 +120,6 @@ jobs:
           out: 'dependency-check-report'
           args: --enableRetired
         continue-on-error: true
-  
       - name: Quality gate — npm audit
         run: |
           CRITICAL=$(cat npm-audit.json | python3 -c "
@@ -135,36 +128,28 @@ jobs:
           v=d.get('metadata',{}).get('vulnerabilities',{})
           print(v.get('critical',0))
           ")
-          HIGH=$(cat npm-audit.json | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          v=d.get('metadata',{}).get('vulnerabilities',{})
-          print(v.get('high',0))
-          ")
-          echo "Critical: $CRITICAL | High: $HIGH"
+          echo "Critical: $CRITICAL"
           if [ "$CRITICAL" -gt 0 ]; then
             echo "GATE FAILED: $CRITICAL critical vulnerabilities"
             exit 1
           fi
-  
-      - uses: actions/upload-artifact@v4    # ← un seul upload, après la quality gate
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: sca-reports
           path: |
             npm-audit.json
             dependency-check-report/
-  # ─── PHASE 6 : BUILD IMAGE DOCKER ──────────────────────────────
+
   docker-build:
     name: Docker Build & Scan (Trivy)
     runs-on: ubuntu-latest
-    needs: [ build, test ]
+    needs: build                        # ← dépend uniquement du build
+    if: always()                        # ← tourne même si build échoue
     steps:
       - uses: actions/checkout@v4
-
       - name: Build Docker image
         run: docker build -t juice-shop:${{ github.sha }} .
-
       - name: Run Trivy (JSON)
         uses: aquasecurity/trivy-action@master
         with:
@@ -172,9 +157,8 @@ jobs:
           format: 'json'
           output: 'trivy-report.json'
           severity: 'CRITICAL,HIGH,MEDIUM'
-          exit-code: '0'          # ← ne pas échouer ici
+          exit-code: '0'
           ignore-unfixed: true
-
       - name: Run Trivy (SARIF)
         uses: aquasecurity/trivy-action@master
         with:
@@ -182,16 +166,14 @@ jobs:
           format: 'sarif'
           output: 'trivy-report.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM'
-          exit-code: '0'          # ← ne pas échouer ici non plus
+          exit-code: '0'
           ignore-unfixed: true
-
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: trivy-report.sarif
           category: trivy
-
       - name: Quality gate — Trivy
         run: |
           CRITICAL=$(python3 -c "
@@ -200,36 +182,30 @@ jobs:
           total=sum(1 for r in d.get('Results',[]) for v in r.get('Vulnerabilities',[]) if v.get('Severity')=='CRITICAL')
           print(total)
           ")
-          echo "Critical CVEs found: $CRITICAL"
+          echo "Critical CVEs: $CRITICAL"
           if [ "$CRITICAL" -gt 0 ]; then
-            echo "❌ GATE FAILED: $CRITICAL critical CVEs in container image"
+            echo "GATE FAILED: $CRITICAL critical CVEs"
             exit 1
           fi
-          echo "✅ No critical CVEs found"
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: trivy-report
           path: trivy-report.json
-
       - name: Save Docker image
         if: always()
         run: docker save juice-shop:${{ github.sha }} | gzip > juice-shop.tar.gz
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: docker-image
           path: juice-shop.tar.gz
 
-  # ─── PHASE 7 : DEPLOY EN ENVIRONNEMENT DE TEST ─────────────────
   deploy-test:
     name: Deploy to Test Environment
     runs-on: ubuntu-latest
     needs: docker-build
-    outputs:
-      app-url: http://localhost:3000
+    if: always()                        # ← tourne même si Trivy gate échoue
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -242,32 +218,28 @@ jobs:
             --name juice-shop-test \
             -p 3000:3000 \
             juice-shop:${{ github.sha }}
-          echo "Waiting for app to start..."
-          sleep 30
-          curl --retry 10 --retry-delay 5 --retry-connrefused http://localhost:3000 -o /dev/null -s -w "%{http_code}"
+          sleep 40
+          curl --retry 15 --retry-delay 5 --retry-connrefused \
+            http://localhost:3000 -o /dev/null -s -w "HTTP %{http_code}\n"
 
-  # ─── PHASE 8 : DAST (ZAP) ──────────────────────────────────────
   dast:
     name: DAST (OWASP ZAP)
     runs-on: ubuntu-latest
     needs: deploy-test
+    if: always()                        # ← tourne même si deploy-test échoue
     steps:
       - uses: actions/checkout@v4
-  
       - uses: actions/download-artifact@v4
         with:
           name: docker-image
-  
       - name: Load and start application
         run: |
           docker load < juice-shop.tar.gz
           docker run -d --name juice-shop-dast -p 3000:3000 juice-shop:${{ github.sha }}
-          echo "Waiting for app to start..."
           sleep 40
           curl --retry 15 --retry-delay 5 --retry-connrefused \
             http://localhost:3000 -o /dev/null -s -w "HTTP %{http_code}\n"
-  
-      - name: Get JWT token (authentication)
+      - name: Get JWT token
         id: auth
         run: |
           TOKEN=$(curl -s -X POST http://localhost:3000/rest/user/login \
@@ -275,36 +247,6 @@ jobs:
             -d '{"email":"admin@juice-sh.op","password":"admin123"}' \
             | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['authentication']['token'])")
           echo "token=$TOKEN" >> $GITHUB_OUTPUT
-          echo "Token obtained: ${TOKEN:0:20}..."
-  
-      - name: Create ZAP context with auth
-        run: |
-          mkdir -p .zap
-          cat > .zap/juice-shop.context << 'EOF'
-          <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-          <configuration>
-            <context>
-              <name>Juice Shop</name>
-              <desc/>
-              <inscope>true</inscope>
-              <incregexes>http://localhost:3000.*</incregexes>
-              <tech>
-                <include>Db</include>
-                <include>Language</include>
-                <include>OS</include>
-                <include>WS</include>
-              </tech>
-              <users/>
-              <forcedUser>-1</forcedUser>
-              <session class="org.zaproxy.zap.extension.httpsessions.HttpSessionsSite"/>
-              <authentication class="org.zaproxy.zap.extension.authentication.AuthenticationMethodType$ManualAuthenticationMethod">
-                <loggedin>basket</loggedin>
-                <loggedout>login</loggedout>
-              </authentication>
-            </context>
-          </configuration>
-          EOF
-  
       - name: ZAP authenticated baseline scan
         run: |
           docker run --rm \
@@ -315,7 +257,6 @@ jobs:
               -t http://localhost:3000 \
               -r /zap/wrk/zap-report.html \
               -J /zap/wrk/zap-report.json \
-              -w /zap/wrk/zap-report.md \
               -z "-config replacer.full_list(0).description=auth \
                   -config replacer.full_list(0).enabled=true \
                   -config replacer.full_list(0).matchtype=REQ_HEADER \
@@ -323,26 +264,19 @@ jobs:
                   -config replacer.full_list(0).replacement='Bearer ${{ steps.auth.outputs.token }}' \
                   -config replacer.full_list(0).matchregex=false" \
               -I || true
-  
       - name: Quality gate — ZAP
         run: |
           HIGH=$(python3 -c "
           import json
-          d = json.load(open('zap-report.json'))
-          total = sum(
-            1 for site in d.get('site', [])
-            for alert in site.get('alerts', [])
-            if alert.get('riskdesc','').startswith('High')
-          )
+          d=json.load(open('zap-report.json'))
+          total=sum(1 for site in d.get('site',[]) for alert in site.get('alerts',[]) if alert.get('riskdesc','').startswith('High'))
           print(total)
           ")
-          echo "High risk alerts: $HIGH"
+          echo "High alerts: $HIGH"
           if [ "$HIGH" -gt 5 ]; then
-            echo "GATE FAILED: $HIGH high-risk alerts detected"
+            echo "GATE FAILED: $HIGH high-risk alerts"
             exit 1
           fi
-          echo "Quality gate passed ($HIGH high alerts)"
-  
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -350,9 +284,7 @@ jobs:
           path: |
             zap-report.json
             zap-report.html
-            zap-report.md
-          retention-days: 30
-  # ─── PHASE 9 : RAPPORT GLOBAL ──────────────────────────────────
+
   security-summary:
     name: Security Reports Summary
     runs-on: ubuntu-latest
@@ -369,35 +301,27 @@ jobs:
         run: |
           status_icon() {
             case "$1" in
-              success)  echo "✅ Pass" ;;
-              failure)  echo "❌ Fail" ;;
-              skipped)  echo "⏭️ Skipped" ;;
-              *)        echo "⚠️ $1" ;;
+              success)  echo "Pass" ;;
+              failure)  echo "Fail" ;;
+              skipped)  echo "Skipped" ;;
+              *)        echo "$1" ;;
             esac
           }
-  
-          echo "## 🛡️ Security Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Security Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Check | Tool | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Secret Detection | Gitleaks | $(status_icon $GITLEAKS_STATUS) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Static Analysis (SAST) | Semgrep | $(status_icon $SEMGREP_STATUS) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Dependency Analysis (SCA) | npm audit + OWASP DC | $(status_icon $SCA_STATUS) |" >> $GITHUB_STEP_SUMMARY
+          echo "| SAST | Semgrep | $(status_icon $SEMGREP_STATUS) |" >> $GITHUB_STEP_SUMMARY
+          echo "| SCA | npm audit + OWASP DC | $(status_icon $SCA_STATUS) |" >> $GITHUB_STEP_SUMMARY
           echo "| Container Scan | Trivy | $(status_icon $TRIVY_STATUS) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Dynamic Analysis (DAST) | OWASP ZAP | $(status_icon $ZAP_STATUS) |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-  
-          # Overall status
+          echo "| DAST | OWASP ZAP | $(status_icon $ZAP_STATUS) |" >> $GITHUB_STEP_SUMMARY
           if [[ "$GITLEAKS_STATUS" == "failure" || "$SEMGREP_STATUS" == "failure" || \
                 "$SCA_STATUS" == "failure" || "$TRIVY_STATUS" == "failure" || \
                 "$ZAP_STATUS" == "failure" ]]; then
-            echo "### ❌ Overall: PIPELINE FAILED — security issues detected" >> $GITHUB_STEP_SUMMARY
+            echo "### Overall: PIPELINE FAILED" >> $GITHUB_STEP_SUMMARY
           else
-            echo "### ✅ Overall: PIPELINE PASSED" >> $GITHUB_STEP_SUMMARY
+            echo "### Overall: PIPELINE PASSED" >> $GITHUB_STEP_SUMMARY
           fi
-  
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "_Run #${{ github.run_number }} — ${{ github.repository }} — $(date -u '+%Y-%m-%d %H:%M UTC')_" >> $GITHUB_STEP_SUMMARY
 
   pdf-report:
     name: Generate PDF Security Report
@@ -405,29 +329,22 @@ jobs:
     needs: [secret-scan, sast, sca, dast]
     if: always()
     steps:
-      - name: Checkout repo (pour récupérer le script)
-        uses: actions/checkout@v4          # ← remplace le curl
- 
+      - uses: actions/checkout@v4
       - name: Install Python dependencies
         run: pip install reportlab
- 
-      - name: Download all security artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           pattern: '*-report*'
           merge-multiple: true
           path: ./reports
- 
       - name: Generate PDF
         env:
           REPORTS_DIR: ./reports
           OUTPUT_PDF:  security-report-${{ github.run_number }}.pdf
           REPO_NAME:   ${{ github.repository }}
           RUN_ID:      ${{ github.run_number }}
-        run: python3 .github/scripts/generate_security_report.py   # ← chemin local
- 
-      - name: Upload PDF Report
-        uses: actions/upload-artifact@v4
+        run: python3 .github/scripts/generate_security_report.py
+      - uses: actions/upload-artifact@v4
         with:
           name: security-report-pdf
           path: security-report-${{ github.run_number }}.pdf
