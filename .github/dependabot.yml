@@ -1,0 +1,61 @@
+version: 2
+
+updates:
+
+  # ── Dépendances npm ────────────────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 10
+    groups:
+      security-patches:
+        applies-to: security-updates
+        update-types:
+          - "patch"
+          - "minor"
+    labels:
+      - "security"
+      - "dependencies"
+    commit-message:
+      prefix: "fix"
+      prefix-development: "chore"
+      include: "scope"
+    ignore:
+      # Ignorer les major versions — risque de breaking changes
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ── Actions GitHub ─────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 5
+    labels:
+      - "ci"
+      - "dependencies"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+  # ── Docker ─────────────────────────────────────────────────────
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Paris"
+    labels:
+      - "security"
+      - "docker"
+    commit-message:
+      prefix: "build"
+      include: "scope"
