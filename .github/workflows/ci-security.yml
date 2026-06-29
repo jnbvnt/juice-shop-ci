@@ -16,7 +16,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()                        # ← tourne toujours
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()                        # ← tourne toujours
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Semgrep
         run: pip install semgrep
       - name: Run Semgrep
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()                        # ← tourne toujours
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -147,7 +147,7 @@ jobs:
     needs: build                        # ← dépend uniquement du build
     if: always()                        # ← tourne même si build échoue
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build Docker image
         run: docker build -t juice-shop:${{ github.sha }} .
       - name: Run Trivy (JSON)
@@ -229,7 +229,7 @@ jobs:
     needs: deploy-test
     if: always()
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v4
         with:
@@ -370,7 +370,7 @@ jobs:
     needs: [secret-scan, sast, sca, dast]
     if: always()
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Python dependencies
         run: pip install reportlab
       - uses: actions/download-artifact@v4
