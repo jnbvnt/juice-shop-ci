@@ -71,7 +71,7 @@ jobs:
           echo "VCS_REF=`git rev-parse --short HEAD`" >> $GITHUB_ENV
           echo "BUILD_DATE=`date -u +”%Y-%m-%dT%H:%M:%SZ”`" >> $GITHUB_ENV
       - name: "Build and push for AMD64 and ARM64 processors"
-        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 #v6.1.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a #v6.1.0
         with:
           context: .
           file: ./Dockerfile
